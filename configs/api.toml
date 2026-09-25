@@ -1,0 +1,33 @@
+[experiment]
+name = "hotpot-prompt-baselines"
+training_status = "untrained-prompt-baselines"
+
+[backend]
+kind = "api"
+base_url = "http://127.0.0.1:8000/v1"
+model = "Qwen/Qwen2.5-1.5B-Instruct"
+api_key_env = "MEMSEARCH_API_KEY"
+temperature = 0.0
+max_tokens = 768
+timeout = 120
+
+# The exact tokenizer used for memory/evidence budgets must stay fixed across conditions.
+[budget]
+tokenizer = "Qwen/Qwen2.5-1.5B-Instruct"
+
+[agent]
+memory = "decision"
+policy = "model"
+memory_budget = 512
+evidence_budget = 1536
+max_searches = 3
+top_k = 2
+retrieval_scope = "candidate"
+
+# Override model/base_url per role to evaluate separately trained checkpoints.
+# [memory_backend]
+# model = "memory-stage1"
+# base_url = "http://127.0.0.1:8001/v1"
+# [controller_backend]
+# model = "controller-stage2"
+# base_url = "http://127.0.0.1:8002/v1"

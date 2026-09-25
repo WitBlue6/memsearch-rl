@@ -1,0 +1,26 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.env
+.DS_Store
+AGENTS.md
+data/raw/
+data/processed/
+outputs/
+checkpoints/
+*.log
+
+# Machine-specific configuration, credentials and model artifacts
+.env.*
+!.env.example
+*.local.env
+*.local.toml
+configs/generated/
+models/
+venvs/
+*.pem
+*.key
+*.safetensors
+*.pt
+*.pth

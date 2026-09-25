@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "memsearch-rl"
+version = "0.1.0"
+description = "Budget-constrained evidence memory and search policy research"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.optional-dependencies]
+structured = ["xgrammar==0.2.7; sys_platform == 'linux'"]
+train = ["torch>=2.5,<3", "transformers>=4.51,<5", "accelerate>=1.5,<2", "peft>=0.15,<1", "safetensors>=0.5"]
+
+[project.scripts]
+memsearch = "memsearch.cli:main"
+memsearch-train = "memsearch.training:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.uv]
+required-version = ">=0.7.9"
+
+[[tool.uv.index]]
+name = "tuna"
+url = "https://pypi.tuna.tsinghua.edu.cn/simple"
+default = true

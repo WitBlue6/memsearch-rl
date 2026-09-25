@@ -1,0 +1,15 @@
+[experiment]
+name = "synthetic-protocol-check"
+training_status = "synthetic-untrained"
+
+[backend]
+kind = "demo"
+
+[agent]
+memory = "decision"
+policy = "model"
+memory_budget = 200
+evidence_budget = 300
+max_searches = 3
+top_k = 1
+retrieval_scope = "candidate"
