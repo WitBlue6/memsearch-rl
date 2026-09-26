@@ -62,7 +62,19 @@ class Agent:
                            "previous_queries": list(queries)}
             try:
                 if cfg["policy"] == "model":
-                    action = parse_action(self.controller.complete(messages("controller", observation), "controller"))
+                    if cfg.get("controller_reader", False):
+                        observation["FROZEN_READER"] = True
+                    if searches >= cfg["max_searches"] and cfg.get("controller_reader", False):
+                        action = parse_answer(parse_json(self.reader.complete(messages("reader", observation), "reader")))
+                    else:
+                        proposal = self.controller.complete(messages("controller", observation), "controller")
+                        parsed = parse_json(proposal)
+                        if cfg.get("controller_reader", False) and parsed == {"action": "FINISH"}:
+                            action = Action("FINISH")
+                        else:
+                            action = parse_action(proposal)
+                        if action.kind == "FINISH" and cfg.get("controller_reader", False):
+                            action = parse_answer(parse_json(self.reader.complete(messages("reader", observation), "reader")))
                 elif searches < cfg["max_searches"]:
                     # Predetermined retrieval schedule, independent of memory and labels.
                     action = Action("SEARCH", query=task.question)
@@ -82,6 +94,8 @@ class Agent:
                 scope = task.candidate_ids if cfg.get("retrieval_scope", "candidate") == "candidate" else None
                 if cfg["policy"] == "fixed":
                     ranking = self.retriever.search(action.query, cfg["top_k"] * cfg["max_searches"], scope)
+                    if cfg.get("evidence_order", "ranked") == "reversed":
+                        ranking = list(reversed(ranking))
                     docs = ranking[(searches - 1) * cfg["top_k"]:searches * cfg["top_k"]]
                 else:
                     docs = self.retriever.search(action.query, cfg["top_k"], scope)

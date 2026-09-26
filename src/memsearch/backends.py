@@ -48,6 +48,13 @@ class ChatBackend:
         if memory_constrained:
             from .structured import memory_schema
             body["structured_outputs"] = {"json": memory_schema(messages)}
+        controller_mode = cfg.get("controller_output", "text")
+        if controller_mode not in {"text", "json_schema"}:
+            raise ValueError("controller_output must be text or json_schema")
+        controller_constrained = role == "controller" and controller_mode == "json_schema"
+        if controller_constrained:
+            from .structured import controller_schema
+            body["structured_outputs"] = {"json": controller_schema(messages)}
         headers = {"Content-Type": "application/json"}
         if key:
             headers["Authorization"] = "Bearer " + key
@@ -69,7 +76,7 @@ class ChatBackend:
                                usage["completion_tokens"] if exact else self.counter.count(text),
                                "model_token" if exact else "estimated_" + self.counter.unit,
                                finish_reason=result["choices"][0].get("finish_reason"),
-                               decoding_mode="reader_json_schema_v1" if constrained else "memory_json_schema_v1" if memory_constrained else "text"))
+                               decoding_mode="reader_json_schema_v1" if constrained else "memory_json_schema_v1" if memory_constrained else "controller_json_schema_v1" if controller_constrained else "text"))
         return text
 
 

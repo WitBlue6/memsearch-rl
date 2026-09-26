@@ -11,6 +11,7 @@ outputs/
 checkpoints/
 *.log
 
+
 # Machine-specific configuration, credentials and model artifacts
 .env.*
 !.env.example

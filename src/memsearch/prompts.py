@@ -109,6 +109,16 @@ def messages(role, observation):
             'titles or unavailable sources. Do not guess facts from general knowledge.'
         ),
     }
+    if role == "controller" and observation.get("FROZEN_READER"):
+        instructions["controller"] = (
+            'Plan the next search using QUESTION and current evidence memory. '
+            'If useful information is missing and search budget remains, output exactly '
+            '{"action":"SEARCH","query":"a specific query"}. Otherwise output exactly '
+            '{"action":"FINISH"}. A separate frozen reader will answer from memory. '
+            'Do not output an answer or evidence_ids. Avoid repeating previous queries. '
+            'Use unresolved subquestions and entities in memory to find missing evidence. '
+            'Raw earlier evidence is unavailable unless retained in memory.'
+        )
     if role in {'memory_decision', 'memory', 'summary'}:
         observation = _memory_observation(role, observation)
     elif role in {'controller', 'reader'}:

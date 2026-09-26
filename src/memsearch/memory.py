@@ -9,7 +9,10 @@ from .types import MemoryItem, MemoryState
 
 
 class Memory:
-    def __init__(self, mode, budget, counter, backend=None, max_ops=16):
+    def __init__(self, mode, budget, counter, backend=None, max_ops=16, overflow="trim"):
+        if overflow not in {"trim", "reject"}:
+            raise ValueError("overflow must be trim or reject")
+        self.overflow = overflow
         if mode not in {"recent", "extractive", "summary", "structured", "decision"}:
             raise ValueError(f"Unknown memory mode: {mode}")
         self.mode, self.budget, self.counter, self.backend = mode, budget, counter, backend
@@ -69,4 +72,8 @@ class Memory:
                 raise ValueError("Invalid unresolved questions")
             state = MemoryState(items, unresolved)
         # Valid ID != entailed fact. Entailment auditing is explicitly separate.
+        if self.mode in {"summary", "structured"} and self.overflow == "reject":
+            if self.counter.count(serialize_memory(state)) > self.budget:
+                raise ValueError("Memory budget exceeded")
+            return state
         return enforce_budget(state, self.budget, self.counter)

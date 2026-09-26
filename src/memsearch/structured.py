@@ -25,6 +25,19 @@ def memory_schema(messages):
                                "items": {"anyOf": variants}}, "unresolved": unresolved}, ["operations"])
 
 
+CONTROLLER_SCHEMA = {"anyOf": [
+    obj({"action": {"const": "SEARCH"}, "query": {"type": "string", "minLength": 1}}),
+    obj({"action": {"const": "FINISH"}, "answer": {"type": "string"},
+         "evidence_ids": {"type": "array", "items": {"type": "string"}}})]}
+
+
+def controller_schema(messages):
+    observation = json.loads(messages[-1]["content"])
+    if observation.get("FROZEN_READER"):
+        return {"anyOf": [CONTROLLER_SCHEMA["anyOf"][0], obj({"action": {"const": "FINISH"}})]}
+    return CONTROLLER_SCHEMA
+
+
 class Grammar:
     def __init__(self, tokenizer, vocab_size):
         import xgrammar as xgr

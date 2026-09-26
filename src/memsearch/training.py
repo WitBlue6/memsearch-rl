@@ -12,8 +12,8 @@ from pathlib import Path
 
 from .budget import ModelCounter
 from .data import fingerprint, load_dataset, read_jsonl
-from .metrics import group_advantages, memory_operation_counts, reward
-from .runner import load_config, make_agent
+from .metrics import group_advantages, memory_operation_counts, reward, answer_scores
+from .runner import load_config, make_agent, make_counter
 from .types import Call
 
 
@@ -69,7 +69,10 @@ def collect_group(agent, task, labels, actor, group_size, search_cost=0.0, trace
                                        ensure_ascii=False) + "\n")
             trace_file.flush()
         rewards.append(reward(episode, labels, search_cost=search_cost))
-        episodes.append({"answer": episode.answer, "errors": episode.errors,
+        episodes.append({"answer_f1": answer_scores(episode.answer, labels.answer)[1],
+                         "invalid_penalty": 0.1 * bool(episode.errors),
+                         "search_penalty": search_cost * episode.searches,
+                         "answer": episode.answer, "errors": episode.errors,
                          "searches": episode.searches, "stop_reason": episode.stop_reason,
                          "memory_operations": memory_operation_counts(episode),
                          "memory_decisions": [s.get("memory_decision") for s in episode.steps]})
@@ -77,7 +80,8 @@ def collect_group(agent, task, labels, actor, group_size, search_cost=0.0, trace
 
 
 class TrainBackend:
-    def __init__(self, model, tokenizer, device, max_prompt=3072, max_new=512, structured=False):
+    def __init__(self, model, tokenizer, device, max_prompt=3072, max_new=512, structured=False, sampling=True, record_samples=True):
+        self.sampling, self.record_samples = sampling, record_samples
         self.model, self.tokenizer, self.device = model, tokenizer, device
         self.max_prompt, self.max_new = max_prompt, max_new
         self.calls, self.samples = [], []
@@ -95,26 +99,27 @@ class TrainBackend:
         self.model.eval()
         ids = torch.tensor([prompt], device=self.device)
         # Full-distribution sampling at T=1 keeps sampling and policy logprobs aligned.
-        gen = GenerationConfig(do_sample=True, temperature=1.0, top_p=1.0, top_k=0,
+        gen = GenerationConfig(do_sample=self.sampling, temperature=1.0, top_p=1.0, top_k=0,
                                max_new_tokens=self.max_new, eos_token_id=self.tokenizer.eos_token_id,
                                pad_token_id=self.tokenizer.pad_token_id, use_cache=True)
         schema, extra = None, {}
         if self.grammar is not None:
-            if role != "memory":
-                raise ValueError("Structured local decoding currently supports memory only")
-            from .structured import memory_schema
-            schema = memory_schema(messages)
+            from .structured import memory_schema, controller_schema
+            if role not in {"memory", "controller"}:
+                raise ValueError("Structured policy role must be memory or controller")
+            schema = memory_schema(messages) if role == "memory" else controller_schema(messages)
             extra["logits_processor"] = [self.grammar.processor(schema)]
         with torch.no_grad():
             full = self.model.generate(input_ids=ids, attention_mask=torch.ones_like(ids), generation_config=gen, **extra)
             completion = full[0, len(prompt):].tolist()
-            old = token_logprobs(self.model, prompt, completion, self.device, self.grammar, schema).cpu().tolist()
+            old = token_logprobs(self.model, prompt, completion, self.device, self.grammar, schema).cpu().tolist() if self.record_samples else []
         text = self.tokenizer.decode(completion, skip_special_tokens=True)
-        self.samples.append(Sample(prompt, completion, old, schema))
+        if self.record_samples:
+            self.samples.append(Sample(prompt, completion, old, schema))
         ended = bool(completion and completion[-1] == self.tokenizer.eos_token_id)
         self.calls.append(Call(role, messages, text, len(prompt), len(completion), "model_token",
                                finish_reason="eos" if ended else "length" if len(completion) >= self.max_new else "other",
-                               decoding_mode="local_memory_schema_v1_t1" if schema is not None else "local_full_distribution_t1"))
+                               decoding_mode=f"local_{role}_schema_v1_" + ("t1" if self.sampling else "greedy") if schema is not None else "local_full_distribution_t1"))
         return text
 
 
@@ -184,6 +189,8 @@ def main():
     p.add_argument("--adapter", help="Optional SFT/previous LoRA adapter; optimizer starts fresh")
     p.add_argument("--data", required=True, help="SFT JSONL or converted QA dataset directory")
     p.add_argument("--config", help="Required for GRPO; frozen roles use configured API backends")
+    p.add_argument("--frozen-memory-adapter", help="Frozen memory LoRA for single-process controller training")
+    p.add_argument("--frozen-memory-device", default="cuda:1")
     p.add_argument("--role", choices=["memory", "controller"], default="memory")
     p.add_argument("--memory-mode", choices=["decision", "summary", "structured"], default="decision",
                    help="decision trains explicit memory operations; other modes are ablations")
@@ -218,8 +225,8 @@ def main():
     counter = ModelCounter(tokenizer)
     optimizer = torch.optim.AdamW([v for v in model.parameters() if v.requires_grad], lr=args.learning_rate)
     set_seed(args.seed + accelerator.process_index + 1)
-    if args.structured_memory and (args.mode != "grpo" or args.role != "memory"):
-        p.error("--structured-memory currently requires GRPO memory training")
+    if args.structured_memory and args.mode != "grpo":
+        p.error("--structured-memory requires GRPO policy training")
     actor = TrainBackend(model, tokenizer, accelerator.device, args.max_prompt, args.max_new, args.structured_memory)
     config = None
     if args.mode == "grpo":
@@ -230,8 +237,19 @@ def main():
             p.error("GRPO requires real frozen API roles; the demo fixture is not training data")
         config["agent"]["memory"] = args.memory_mode
         config["agent"]["policy"] = "fixed" if args.role == "memory" else "model"
+        counter = make_counter(config)  # Honor a fixed budget tokenizer across model sizes.
         docs, tasks, labels = load_dataset(args.data)
-        agent = make_agent(config, docs, counter, {args.role: actor})
+        overrides = {args.role: actor}
+        if args.frozen_memory_adapter:
+            if args.role != "controller" or accelerator.num_processes != 1:
+                p.error("Frozen local memory requires single-process controller training")
+            from transformers import AutoModelForCausalLM
+            from peft import PeftModel
+            frozen = AutoModelForCausalLM.from_pretrained(args.model, torch_dtype=torch.bfloat16).to(args.frozen_memory_device)
+            frozen = PeftModel.from_pretrained(frozen, args.frozen_memory_adapter, is_trainable=False)
+            overrides["memory"] = TrainBackend(frozen, tokenizer, args.frozen_memory_device, args.max_prompt, args.max_new,
+                                               structured=True, sampling=False, record_samples=False)
+        agent = make_agent(config, docs, counter, overrides)
         rows = tasks
     else:
         rows = list(read_jsonl(args.data))
@@ -274,6 +292,8 @@ def main():
                 local_trainable = float(any(g and abs(a) > 1e-8 for g, a in zip(groups, advantages)))
                 active = accelerator.reduce(torch.tensor(local_trainable, device=accelerator.device), reduction="sum").item()
                 total_loss = 0.0
+                diagnostics = {"tokens": 0, "ratio_sum": 0.0, "clip_count": 0, "approx_kl_sum": 0.0}
+                grad_norms = []
                 if active:
                     for _ in range(args.updates_per_rollout):
                         optimizer.zero_grad(set_to_none=True)
@@ -285,13 +305,27 @@ def main():
                             for sample in samples:
                                 new = token_logprobs(model, sample.prompt_ids, sample.completion_ids, accelerator.device, actor.grammar, sample.schema)
                                 old = torch.tensor(sample.old_logprobs, device=accelerator.device)
+                                with torch.no_grad():
+                                    delta = new.detach() - old
+                                    ratio = delta.exp()
+                                    diagnostics["tokens"] += ratio.numel()
+                                    diagnostics["ratio_sum"] += ratio.sum().item()
+                                    diagnostics["clip_count"] += ((ratio < .8) | (ratio > 1.2)).sum().item()
+                                    diagnostics["approx_kl_sum"] += (ratio - 1 - delta).sum().item()
                                 loss = clipped_objective(new, old, advantage).sum() / n_tokens / args.group_size
                                 accelerator.backward(loss)
                                 total_loss += loss.item()
                         average_gradients(model, accelerator)
-                        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                        grad_norms.append(float(torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)))
                         optimizer.step()
-                info = {"step": step + 1, "task_id": row.id, "rewards": rewards,
+                count = diagnostics["tokens"]
+                diagnostics.update(ratio_mean=diagnostics["ratio_sum"] / count if count else None,
+                                   clip_fraction=diagnostics["clip_count"] / count if count else None,
+                                   approx_kl=diagnostics["approx_kl_sum"] / count if count else None,
+                                   gradient_norms=grad_norms,
+                                   completion_tokens=[sum(len(s.completion_ids) for s in g) for g in groups],
+                                   valid_fraction=sum(not e["errors"] for e in episodes) / len(episodes))
+                info = {"diagnostics": diagnostics, "step": step + 1, "task_id": row.id, "rewards": rewards,
                         "advantages": advantages, "zero_variance": max(rewards) == min(rewards),
                         "updated": bool(active), "loss": total_loss, "episodes": episodes}
                 # Avoid retaining all prompts and trajectories across optimization steps.

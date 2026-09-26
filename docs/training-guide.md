@@ -1,10 +1,20 @@
 # MemSearch RL：从配置到训练后评测
 
-本教程完成第一阶段闭环：下载并校验数据 → 部署冻结 reader → 训练前基线 → 单卡检查 → 六卡短程 RL → 合并 LoRA → 部署记忆模型 → 训练后评测与对比。第二阶段搜索控制器训练不属于本次已验证闭环。
+本教程完成第一阶段闭环：下载并校验数据 → 部署冻结 reader → 训练前基线 → 单卡检查 → 六卡短程 RL → 合并 LoRA → 部署记忆模型 → 训练后评测与对比。本文保留最初短程验收的步骤；后续已完成的研究实验与搜索控制器训练见下方入口。
 
 研究对象是预算约束下的 ADD / UPDATE / DELETE / NOOP 记忆决策。固定 BM25 检索计划与 reader，只训练记忆策略 LoRA；数据为 HotpotQA distractor，每题记忆独立。默认最终答案 F1 为奖励，无效轨迹奖励 -0.1。参考训练器使用组内相对优势、clipped policy loss，KL 系数为 0。不是 full-wiki、跨会话长期记忆或完整 verl 实现。
 
 本文先用 20 题评测与六卡各 4 步训练验收全链路；这不等于模型收敛，也不能用短程结果宣称稳定算法提升。具体实测结果见末尾与 [验证记录](validation.md)。
+
+## 后续研究与结果入口
+
+首次运行先完成本文的基础闭环。已经跑通后，进入 [研究实验流程](research-workflow.md)，按独立数据划分 → 公平基线与多种子学习曲线 → 预算与证据顺序实验 → SFT 冷启动 → 冻结 memory 的 controller 训练 → 锁定测试与报告的顺序开展实验。
+
+- [研究实验流程](research-workflow.md)：研究版配置、服务和各阶段命令，主脚本为 [research_pipeline.py](../scripts/research_pipeline.py)。
+- [项目贡献与实验总结](project-contributions.md)：controller／memory／reader 的职责、具体代码改进，以及已完成的 200 题 test 结果与结论边界。
+- [验证记录](validation.md)：基础闭环的历史排错与验收记录。
+
+本文第 13 节仍是最初 20 题短程验收记录，不是最新研究结果。研究主脚本的 `test` 阶段覆盖原始基线和三个 memory RL 种子；SFT 与 controller 的扩展测试需要额外通过 [research_eval.py](../scripts/research_eval.py) 运行。已有实验产物应保留，不要为跟随教程重复覆盖或重跑已完成阶段。
 
 ## 1. 安装项目环境
 
@@ -280,6 +290,6 @@ cp uv.lock "outputs/$EXPERIMENT_ID/uv.lock"
 
 .gitignore 排除本地配置、原始/处理后数据、虚拟环境、输出、checkpoint、权重和常见密钥文件。忽略规则不能自动移除已跟踪的文件，提交前检查暂存区和历史。公开文档不包含个人账户、SSH 地址或用户目录；运行产物可能含本机路径，应单独审查后分享。
 
-第二阶段可使用 scripts/train_controller.sh，在配置中将 memory_backend 指向冻结记忆模型，另行训练、部署和评测搜索控制器；当前本地 Schema 训练选项只支持 memory，不应照搬给 controller。完整 verl AgentLoop 和长期学习效果仍属后续工作。
+后续 controller 训练使用 [研究实验流程](research-workflow.md) 中的 `research controller` 入口：冻结指定 memory checkpoint 和 reader，训练 SEARCH(query)／FINISH 决策。当前 API 与本地 Schema 均已支持 controller；本轮研究协议由冻结 reader 生成最终答案。该分阶段流程已有实测结果，见 [项目贡献与实验总结](project-contributions.md)；完整 verl AgentLoop、长期学习效果和统计显著性仍未得到验证。
 
 文件入口：configs/experiment.env.example（统一配置）、scripts/experiment.sh / experiment.py（流程）、scripts/compare_results.py（对比）、src/memsearch/structured.py（共享 Schema 与概率掩码）、training.py（SFT/GRPO）。
